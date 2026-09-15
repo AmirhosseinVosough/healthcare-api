@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     redis_url: str
     jwt_secret: str
     jwt_algorithm: str = "HS256"
+    # bcrypt cost factor. 12 is the sane production default; tests drop it
+    # to 4 so the suite is not spending a third of a second per login.
+    bcrypt_rounds: int = 12
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
 
