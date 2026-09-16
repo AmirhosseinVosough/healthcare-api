@@ -6,8 +6,12 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import User, UserRole
+from app.core.tokens import TokenError, TokenType, decode_token
+from app.database.models import Tenant, User, UserRole
+from app.database.session import get_db
 
 # auto_error=False matters. Left to itself, FastAPI answers a missing
 # Authorization header with 403, which means "I know who you are and you are
@@ -91,3 +95,40 @@ class CurrentUser:
     @property
     def is_patient(self) -> bool:
         return self.role is UserRole.PATIENT
+
+
+async def get_current_user(
+    token: Annotated[str, Depends(get_bearer_token)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CurrentUser:
+    """Turn a token into the person it belongs to, or 401.
+
+    A valid signature is not enough on its own. A token lives for fifteen
+    minutes, and in that time an account can be switched off, deleted, or its
+    whole clinic closed down. So the token says who to look for, and the
+    database says whether they may still come in.
+    """
+    try:
+        claims = decode_token(token, expected_type=TokenType.ACCESS)
+    except TokenError:
+        # Expired, tampered with, signed by someone else, or a refresh token
+        # being passed off as an access token. The caller learns none of that.
+        raise not_authenticated() from None
+
+    # Both the user and the clinic are checked in one trip. Matching on
+    # tenant_id as well as id means a token naming the wrong clinic finds
+    # nothing at all, rather than finding the user and trusting the claim.
+    user = await db.scalar(
+        select(User)
+        .join(Tenant, Tenant.id == User.tenant_id)
+        .where(
+            User.id == claims.sub,
+            User.tenant_id == claims.tid,
+            User.is_active.is_(True),
+            Tenant.is_active.is_(True),
+        )
+    )
+    if user is None:
+        raise not_authenticated()
+
+    return CurrentUser.from_user(user)

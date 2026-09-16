@@ -12,6 +12,7 @@ from app.core.security import dummy_verify, hash_password, verify_password
 from app.core.tokens import create_access_token, create_refresh_token
 from app.database.models import Tenant, User, UserRole
 from app.database.session import get_db
+from app.dependencies.auth import CurrentUser, get_current_user
 from app.dependencies.tenant import get_tenant
 from app.schemas.auth import (
     ClinicOut,
@@ -144,3 +145,14 @@ async def login(payload: LoginRequest, clinic: CurrentClinic, db: DbSession):
         raise _invalid_credentials()
 
     return _issue_tokens(user)
+
+
+@router.get(
+    "/me",
+    response_model=UserOut,
+    summary="Who the current token belongs to",
+)
+async def read_me(user: Annotated[CurrentUser, Depends(get_current_user)]):
+    """The first route behind a token. Everything in Phase 5 sits behind the
+    same dependency, which is why this one is worth proving on its own."""
+    return UserOut.model_validate(user)
