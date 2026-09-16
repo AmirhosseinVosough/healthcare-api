@@ -16,7 +16,10 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    literal_column,
+    text,
 )
+from sqlalchemy.dialects.postgresql import ExcludeConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Explicit naming convention so Alembic autogenerate emits stable, human-readable
@@ -111,6 +114,21 @@ class Appointment(Base):
             name="fk_appointments_provider_users",
         ),
         CheckConstraint("scheduled_end > scheduled_start", name="end_after_start"),
+        # The same doctor cannot be in two places at once. Postgres refuses any
+        # appointment whose time range overlaps an existing one for that
+        # provider, so two requests arriving in the same instant cannot both
+        # win — the database decides, not a check in our code that another
+        # request can slip past.
+        #
+        # Cancelled appointments are left out: cancelling should free the slot.
+        ExcludeConstraint(
+            ("tenant_id", "="),
+            ("provider_id", "="),
+            (literal_column("tstzrange(scheduled_start, scheduled_end)"), "&&"),
+            name="no_provider_double_booking",
+            using="gist",
+            where=text("status <> 'cancelled'"),
+        ),
         Index("ix_appointments_tenant_id_scheduled_start", "tenant_id", "scheduled_start"),
         Index(
             "ix_appointments_tenant_id_provider_id_scheduled_start",

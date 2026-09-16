@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 
-from app.routers import auth
+from app.routers import appointments, auth
 
 app = FastAPI(title="Healthcare Appointment API")
 
 app.include_router(auth.router)
+app.include_router(appointments.router)
 
 
 @app.get("/health")
