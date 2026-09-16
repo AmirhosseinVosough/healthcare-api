@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     # bcrypt cost factor. 12 is the sane production default; tests drop it
     # to 4 so the suite is not spending a third of a second per login.
     bcrypt_rounds: int = 12
+    # Rate limiting. Five attempts a minute is generous for a person typing a
+    # password and useless to a script working through a dictionary.
+    rate_limit_enabled: bool = True
+    auth_rate_limit: int = 5
+    auth_rate_window_seconds: int = 60
+    # Only switch this on when something trustworthy sits in front of the app.
+    # Otherwise X-Forwarded-For is written by whoever is calling, and they can
+    # put a fresh invented address in it on every request to reset their own
+    # allowance — which would make the limiter decorative.
+    trust_proxy_headers: bool = False
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
 

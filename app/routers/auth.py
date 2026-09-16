@@ -13,6 +13,7 @@ from app.core.tokens import create_access_token, create_refresh_token
 from app.database.models import Tenant, User, UserRole
 from app.database.session import get_db
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.dependencies.rate_limit import RateLimit
 from app.dependencies.tenant import get_tenant
 from app.schemas.auth import (
     ClinicOut,
@@ -60,6 +61,7 @@ def _issue_tokens(user: User) -> TokenResponse:
 
 @router.post(
     "/signup",
+    dependencies=[Depends(RateLimit("signup"))],
     status_code=status.HTTP_201_CREATED,
     response_model=ClinicSignupResponse,
     summary="Create a new clinic and its first admin",
@@ -126,7 +128,12 @@ async def register_patient(
     return UserOut.model_validate(patient)
 
 
-@router.post("/login", response_model=TokenResponse, summary="Exchange a password for tokens")
+@router.post(
+    "/login",
+    dependencies=[Depends(RateLimit("login"))],
+    response_model=TokenResponse,
+    summary="Exchange a password for tokens",
+)
 async def login(payload: LoginRequest, clinic: CurrentClinic, db: DbSession):
     user = await db.scalar(
         select(User).where(User.tenant_id == clinic.id, User.email == payload.email)

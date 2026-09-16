@@ -6,6 +6,7 @@ import os
 os.environ.setdefault("BCRYPT_ROUNDS", "4")
 
 import uuid  # noqa: E402
+from random import randint  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 
 import httpx  # noqa: E402
@@ -13,6 +14,7 @@ import pytest  # noqa: E402
 
 from app.core.security import hash_password  # noqa: E402
 from app.database.models import Tenant, User, UserRole  # noqa: E402
+from app.core.redis import lifespan  # noqa: E402
 from app.database.session import AsyncSessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -32,9 +34,23 @@ async def _close_pooled_connections():
 
 @pytest.fixture
 async def client():
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    """A client that looks like a different caller in every test.
+
+    Two things matter here. The lifespan is entered by hand because
+    ASGITransport does not run it, and without it app.state.redis never
+    exists — so anything behind the rate limiter falls over.
+
+    And each test gets its own invented address. Sharing one would mean the
+    first test to spend its login allowance leaves every test after it
+    already locked out, which looks like a broken limiter rather than a
+    broken fixture.
+    """
+    address = f"10.{randint(0, 255)}.{randint(0, 255)}.{randint(1, 254)}"
+    async with lifespan(app):
+        transport = httpx.ASGITransport(app=app, client=(address, 12345))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            c.caller_address = address
+            yield c
 
 
 @dataclass
