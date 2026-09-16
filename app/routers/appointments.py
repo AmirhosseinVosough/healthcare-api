@@ -133,3 +133,33 @@ async def list_appointments(
     query = query.order_by(Appointment.scheduled_start).limit(limit).offset(offset)
     rows = (await db.scalars(query)).all()
     return [AppointmentOut.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/{appointment_id}",
+    response_model=AppointmentOut,
+    summary="Fetch one appointment",
+    responses={404: {"description": "No such appointment, in your clinic"}},
+)
+async def get_appointment(appointment_id: uuid.UUID, caller: Caller, db: DbSession):
+    """404, never 403, for an appointment belonging to another clinic.
+
+    403 means "this exists and you may not have it", which confirms it exists.
+    From outside, a real appointment at another clinic and an id nobody has
+    ever used are indistinguishable — both are simply not here.
+
+    The clinic condition sits in the lookup itself rather than in a check
+    afterwards, so there is no moment where the row is in hand and a check
+    could be forgotten.
+    """
+    appointment = await db.scalar(
+        select(Appointment).where(
+            Appointment.id == appointment_id,
+            Appointment.tenant_id == caller.tenant_id,
+        )
+    )
+    if appointment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such appointment"
+        )
+    return AppointmentOut.model_validate(appointment)

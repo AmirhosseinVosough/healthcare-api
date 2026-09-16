@@ -45,6 +45,7 @@ class Clinic:
     slug: str
     admin: User
     patient: User
+    provider: User
     password: str
 
 
@@ -58,7 +59,7 @@ async def clinic():
         db.add(tenant)
         await db.flush()
         people = {}
-        for role in (UserRole.ADMIN, UserRole.PATIENT):
+        for role in (UserRole.ADMIN, UserRole.PATIENT, UserRole.PROVIDER):
             person = User(
                 tenant_id=tenant.id,
                 email=f"{role.value}@{slug}.example.com",
@@ -74,6 +75,7 @@ async def clinic():
             slug=slug,
             admin=people[UserRole.ADMIN],
             patient=people[UserRole.PATIENT],
+            provider=people[UserRole.PROVIDER],
             password=password,
         )
 
