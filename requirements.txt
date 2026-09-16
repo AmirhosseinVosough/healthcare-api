@@ -7,7 +7,7 @@ redis>=5.0
 passlib[bcrypt]>=1.7
 bcrypt<4.1
 pyjwt>=2.9
-pydantic>=2.9
+pydantic[email]>=2.9
 pydantic-settings>=2.5
 fastapi-limiter>=0.1.6
 pytest>=8.3

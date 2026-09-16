@@ -1,0 +1,146 @@
+"""Signup, registration and login. None of these require a token."""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.security import dummy_verify, hash_password, verify_password
+from app.core.tokens import create_access_token, create_refresh_token
+from app.database.models import Tenant, User, UserRole
+from app.database.session import get_db
+from app.dependencies.tenant import get_tenant
+from app.schemas.auth import (
+    ClinicOut,
+    ClinicSignupRequest,
+    ClinicSignupResponse,
+    LoginRequest,
+    PatientRegisterRequest,
+    TokenResponse,
+    UserOut,
+)
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+DbSession = Annotated[AsyncSession, Depends(get_db)]
+CurrentClinic = Annotated[Tenant, Depends(get_tenant)]
+
+
+def _invalid_credentials() -> HTTPException:
+    """One identical answer for every failed login.
+
+    Same wording whether the email is unknown, the password is wrong, or the
+    account is switched off. Any difference between those three would tell an
+    attacker which emails are real.
+    """
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Incorrect email or password",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _issue_tokens(user: User) -> TokenResponse:
+    access = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id, role=user.role
+    )
+    refresh = create_refresh_token(
+        user_id=user.id, tenant_id=user.tenant_id, role=user.role
+    )
+    return TokenResponse(
+        access_token=access.token,
+        refresh_token=refresh.token,
+        expires_in=settings.access_token_expire_minutes * 60,
+    )
+
+
+@router.post(
+    "/signup",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ClinicSignupResponse,
+    summary="Create a new clinic and its first admin",
+)
+async def signup_clinic(payload: ClinicSignupRequest, db: DbSession):
+    """Both rows are written in one transaction.
+
+    If the admin cannot be created, the clinic is not created either — there is
+    no state where a clinic exists that nobody can log into.
+    """
+    clinic = Tenant(name=payload.clinic_name, slug=payload.clinic_slug)
+    db.add(clinic)
+    try:
+        await db.flush()  # assigns clinic.id without ending the transaction
+        admin = User(
+            tenant_id=clinic.id,
+            email=payload.email,
+            hashed_password=hash_password(payload.password),
+            full_name=payload.full_name,
+            role=UserRole.ADMIN,
+        )
+        db.add(admin)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That clinic address is already taken",
+        ) from None
+
+    return ClinicSignupResponse(
+        clinic=ClinicOut.model_validate(clinic), admin=UserOut.model_validate(admin)
+    )
+
+
+@router.post(
+    "/register",
+    status_code=status.HTTP_201_CREATED,
+    response_model=UserOut,
+    summary="Register as a patient at an existing clinic",
+)
+async def register_patient(
+    payload: PatientRegisterRequest, clinic: CurrentClinic, db: DbSession
+):
+    patient = User(
+        tenant_id=clinic.id,
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        full_name=payload.full_name,
+        # Fixed here, never read from the request. This is the line that stops
+        # anyone signing themselves up as an admin.
+        role=UserRole.PATIENT,
+    )
+    db.add(patient)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That email is already registered at this clinic",
+        ) from None
+
+    return UserOut.model_validate(patient)
+
+
+@router.post("/login", response_model=TokenResponse, summary="Exchange a password for tokens")
+async def login(payload: LoginRequest, clinic: CurrentClinic, db: DbSession):
+    user = await db.scalar(
+        select(User).where(User.tenant_id == clinic.id, User.email == payload.email)
+    )
+
+    if user is None:
+        # Do the same work a real check costs, so an unknown email takes just
+        # as long to answer as a real one.
+        dummy_verify()
+        raise _invalid_credentials()
+
+    if not verify_password(payload.password, user.hashed_password):
+        raise _invalid_credentials()
+
+    if not user.is_active:
+        raise _invalid_credentials()
+
+    return _issue_tokens(user)
