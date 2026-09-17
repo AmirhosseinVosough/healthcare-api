@@ -4,11 +4,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.revocation import RevokedTokens
 from app.core.tokens import TokenError, TokenType, decode_token
 from app.database.models import Tenant, User, UserRole
 from app.database.session import get_db
@@ -98,6 +99,7 @@ class CurrentUser:
 
 
 async def get_current_user(
+    request: Request,
     token: Annotated[str, Depends(get_bearer_token)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CurrentUser:
@@ -114,6 +116,12 @@ async def get_current_user(
         # Expired, tampered with, signed by someone else, or a refresh token
         # being passed off as an access token. The caller learns none of that.
         raise not_authenticated() from None
+
+    # Checked before the database, in this order on purpose: reading the token
+    # costs nothing, the revocation list is one fast lookup, and the database
+    # is the expensive part. A logged-out token should not reach it.
+    if await RevokedTokens(request.app.state.redis).is_revoked(claims.jti):
+        raise not_authenticated()
 
     # Both the user and the clinic are checked in one trip. Matching on
     # tenant_id as well as id means a token naming the wrong clinic finds
