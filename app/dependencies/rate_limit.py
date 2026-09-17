@@ -1,6 +1,7 @@
 """Puts the rate limiter in front of a route."""
 
 from fastapi import HTTPException, Request, status
+from redis.exceptions import RedisError
 
 from app.core.config import settings
 from app.core.rate_limit import RateLimiter
@@ -44,9 +45,25 @@ class RateLimit:
 
         limiter = RateLimiter(request.app.state.redis)
         key = f"ratelimit:{self.scope}:{caller_address(request)}"
-        decision = await limiter.check(
-            key, limit=self.limit, window_seconds=self.window_seconds
-        )
+        try:
+            decision = await limiter.check(
+                key, limit=self.limit, window_seconds=self.window_seconds
+            )
+        except (RedisError, OSError) as exc:
+            # Fail closed, deliberately.
+            #
+            # With Redis gone we cannot count attempts. Letting everyone
+            # through would mean an outage in the counting service quietly
+            # removes brute-force protection from the login page — and the one
+            # thing worth attacking during an outage is the login page.
+            #
+            # Refusing logins for a few minutes is a visible, understood
+            # failure. Silently unlimited password guessing is neither.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Login is briefly unavailable. Please try again shortly.",
+                headers={"Retry-After": "30"},
+            ) from exc
 
         if not decision.allowed:
             raise HTTPException(
