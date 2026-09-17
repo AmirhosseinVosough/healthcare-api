@@ -7,6 +7,7 @@ Guard 2: per-account failed-login limit. Only failures count, and a correct
 password is honoured even when the account's budget is full.
 """
 
+import random
 import uuid
 from types import SimpleNamespace
 
@@ -71,6 +72,25 @@ async def redis():
 
 
 @pytest.fixture
+def src():
+    """A fresh, unique source address on each call.
+
+    Redis is shared across tests and the per-caller bucket lives a minute, so
+    reusing a fixed address across tests would let one test's requests fill
+    another's per-caller budget — Guard 1 firing where the test meant to
+    exercise Guard 2. A unique base per test keeps them apart.
+    """
+    base = f"{random.randint(11, 250)}.{random.randint(0, 255)}.{random.randint(0, 255)}"
+    counter = {"n": 0}
+
+    def nxt() -> str:
+        counter["n"] += 1
+        return f"{base}.{counter['n'] % 256}"
+
+    return nxt
+
+
+@pytest.fixture
 def trust_the_test_client(client, monkeypatch):
     """Treat the test client as a trusted proxy, so X-Forwarded-For is believed.
 
@@ -103,55 +123,55 @@ async def right(client, clinic, source):
 
 
 async def test_too_many_wrong_guesses_on_one_account_are_refused(
-    client, clinic, redis, trust_the_test_client
+    client, clinic, redis, trust_the_test_client, src
 ):
     await redis.delete(account_key(clinic, clinic.admin.email))
     codes = [
-        (await wrong(client, clinic, clinic.admin.email, f"9.9.9.{i}")).status_code
-        for i in range(12)
+        (await wrong(client, clinic, clinic.admin.email, src())).status_code
+        for _ in range(12)
     ]
     assert 429 in codes, f"the account guard never fired: {codes}"
 
 
 async def test_a_correct_password_still_works_when_the_budget_is_full(
-    client, clinic, redis, trust_the_test_client
+    client, clinic, redis, trust_the_test_client, src
 ):
     """The whole point. An attacker filling the budget must not lock the owner out."""
     await redis.delete(account_key(clinic, clinic.admin.email))
 
     # Bury the account under failures, each from a different machine.
-    for i in range(settings.account_rate_limit + 2):
-        await wrong(client, clinic, clinic.admin.email, f"9.9.9.{i}")
+    for _ in range(settings.account_rate_limit + 2):
+        await wrong(client, clinic, clinic.admin.email, src())
 
     # The real owner, from their own machine, with the right password.
-    ok = await right(client, clinic, "5.5.5.5")
+    ok = await right(client, clinic, src())
     assert ok.status_code == 200, "the owner was locked out by an attacker's failures"
 
 
 async def test_a_success_clears_the_failure_count(
-    client, clinic, redis, trust_the_test_client
+    client, clinic, redis, trust_the_test_client, src
 ):
     await redis.delete(account_key(clinic, clinic.admin.email))
-    for i in range(3):
-        await wrong(client, clinic, clinic.admin.email, f"9.9.9.{i}")
+    for _ in range(3):
+        await wrong(client, clinic, clinic.admin.email, src())
     assert await redis.zcard(account_key(clinic, clinic.admin.email)) == 3
 
-    await right(client, clinic, "5.5.5.5")
+    await right(client, clinic, src())
     assert await redis.exists(account_key(clinic, clinic.admin.email)) == 0
 
 
 async def test_a_successful_login_never_counts_against_the_budget(
-    client, clinic, redis, trust_the_test_client
+    client, clinic, redis, trust_the_test_client, src
 ):
     await redis.delete(account_key(clinic, clinic.admin.email))
-    for i in range(20):
-        assert (await right(client, clinic, f"5.5.5.{i}")).status_code == 200
+    for _ in range(20):
+        assert (await right(client, clinic, src())).status_code == 200
     # Twenty good logins, and the account is nowhere near locked.
     assert await redis.zcard(account_key(clinic, clinic.admin.email)) == 0
 
 
 async def test_an_unknown_email_is_refused_the_same_way(
-    client, clinic, redis, trust_the_test_client
+    client, clinic, redis, trust_the_test_client, src
 ):
     """No enumeration: a made-up email locks out just like a real one, so the
     lockout tells an attacker nothing about which emails exist."""

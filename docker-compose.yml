@@ -25,5 +25,33 @@ services:
       timeout: 5s
       retries: 5
 
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the services are reachable by name, and
+      # Postgres listens on its own 5432 here, not the 5433 we map to the host.
+      DATABASE_URL: postgresql+asyncpg://healthcare:healthcare@postgres:5432/healthcare
+      REDIS_URL: redis://redis:6379/0
+      # A real key for local runs. In a real deployment this comes from the
+      # platform's secret store, never from a file in the repo.
+      JWT_SECRET: local-compose-secret-32-bytes-min-0123456789
+      # The compose network puts every container on the same subnet, so the
+      # proxy that fronts the api in production is not present here. Trust
+      # nobody, which means the rate limit counts by real connection.
+      TRUSTED_PROXY_IPS: ""
+      WEB_CONCURRENCY: "1"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
 volumes:
   pgdata:

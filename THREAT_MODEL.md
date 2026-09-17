@@ -184,15 +184,27 @@ the refresh token too, or logout would be cosmetic.
 attack. Deliberately slow hashing raises the cost per guess but does not cap
 the number of guesses.
 
-**Defence.** Five attempts per caller per minute on login, signup and refresh,
-counted as a sliding window so there is no clock boundary to straddle. The
-whole decision runs inside Redis as one indivisible step, so simultaneous
-requests cannot all read the same count before any writes. Blocked requests
-never reach the database or the password hasher.
+**Defence — two guards.** One counts attempts per caller (five a minute,
+sliding window, decided atomically in Redis). The caller's address is taken
+from the real connection, and the `X-Forwarded-For` header is believed only
+when the connection came from a trusted proxy — otherwise an attacker renames
+themselves on every guess and the limit is decorative. The second counts FAILED
+logins per account, so a crowd of machines attacking one account share one
+budget, which the per-caller limit cannot cover. Only failures count, and the
+password is checked before the account budget is consulted, so a correct
+password always admits the real owner even mid-attack.
 
-**Proved by:** `test_rate_limit.py` — the sixth attempt is refused; twenty
-simultaneous requests against a limit of five let exactly five through;
-spending the allowance and waiting past the halfway point still leaves no room.
+**The trade, stated plainly:** a per-account limit lets an attacker cause a
+targeted, self-healing lockout — fill an account's failure budget and its owner
+is refused for the window, unless they get the password right, which they do.
+That is accepted: a bounded lockout beats unlimited guessing against medical
+records. A production system would add a recovery path (an email link, a
+CAPTCHA) rather than a hard wait.
+
+**Proved by:** `test_rate_limit.py` and `test_bruteforce.py` — the sixth caller
+attempt is refused; a forged `X-Forwarded-For` from an untrusted peer is
+ignored; a multi-source attack on one account is stopped; and a correct
+password still works with the account budget full.
 
 ## 13. Two patients given the same appointment slot
 
@@ -246,9 +258,9 @@ log that copies the notes has doubled the number of places those notes live.
 
 Named deliberately. A threat model that lists only what it defends is marketing.
 
-- **Rate limiting is per address.** A clinic behind one office connection
-  shares an allowance; an attacker with many addresses gets many allowances.
-  Per-account limiting alongside it is the real answer.
+- **Rate limiting has no recovery path.** The per-account limit can be used to
+  lock a specific account out for the window (see §12). Self-healing, but a
+  real product would offer an email-link or CAPTCHA bypass for the owner.
 - **`X-Forwarded-For` is ignored by default**, which is correct when nothing
   trustworthy sits in front. Deploying behind a proxy means turning that on,
   and turning it on without a trusted proxy lets callers reset their own
