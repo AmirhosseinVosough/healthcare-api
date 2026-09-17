@@ -2,19 +2,19 @@
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 
+from app.core.redis import lifespan
 from app.core.security import hash_password
 from app.core.tokens import create_access_token
 from app.database.models import Tenant, User, UserRole
-from app.database.session import AsyncSessionLocal
-from app.core.redis import lifespan
+from app.database.session import AsyncSessionLocal, use_tenant
 from app.main import app
 
-SOON = datetime.now(timezone.utc) + timedelta(days=30)
+SOON = datetime.now(UTC) + timedelta(days=30)
 
 
 def token_for(user: User) -> str:
@@ -44,6 +44,7 @@ async def make_second_clinic():
         tenant = Tenant(name="Other Clinic", slug=slug)
         db.add(tenant)
         await db.flush()
+        await use_tenant(db, tenant.id)
         people = {}
         for role in (UserRole.ADMIN, UserRole.PATIENT, UserRole.PROVIDER):
             person = User(
@@ -71,7 +72,9 @@ async def delete_clinic(tenant_id):
 
 
 async def test_booking_an_appointment(client, clinic):
-    r = await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic))
+    r = await client.post(
+        "/appointments", headers=auth(clinic.admin), json=booking(clinic)
+    )
     assert r.status_code == 201
     body = r.json()
     assert body["tenant_id"] == str(clinic.id)
@@ -103,13 +106,20 @@ async def test_booking_needs_a_token(client, clinic):
         ({"scheduled_end": SOON.isoformat()}, "zero length"),
         ({"scheduled_end": (SOON - timedelta(minutes=5)).isoformat()}, "ends first"),
         ({"scheduled_end": (SOON + timedelta(hours=9)).isoformat()}, "nine hours"),
-        ({"scheduled_start": "2020-01-01T10:00:00Z",
-          "scheduled_end": "2020-01-01T10:30:00Z"}, "in the past"),
+        (
+            {
+                "scheduled_start": "2020-01-01T10:00:00Z",
+                "scheduled_end": "2020-01-01T10:30:00Z",
+            },
+            "in the past",
+        ),
         ({"scheduled_start": SOON.replace(tzinfo=None).isoformat()}, "no timezone"),
     ],
 )
 async def test_nonsense_times_refused(client, clinic, bad, reason):
-    r = await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic) | bad)
+    r = await client.post(
+        "/appointments", headers=auth(clinic.admin), json=booking(clinic) | bad
+    )
     assert r.status_code == 422, reason
 
 
@@ -130,7 +140,9 @@ async def test_cannot_book_another_clinics_patient(client, clinic):
 async def test_cannot_book_another_clinics_doctor(client, clinic):
     other_id, other_people = await make_second_clinic()
     try:
-        payload = booking(clinic) | {"provider_id": str(other_people[UserRole.PROVIDER].id)}
+        payload = booking(clinic) | {
+            "provider_id": str(other_people[UserRole.PROVIDER].id)
+        }
         r = await client.post("/appointments", headers=auth(clinic.admin), json=payload)
         assert r.status_code == 404
         assert r.json()["detail"] == "No such provider"
@@ -140,7 +152,9 @@ async def test_cannot_book_another_clinics_doctor(client, clinic):
 
 async def test_another_clinic_gets_404_not_403(client, clinic):
     """The plan's headline check. 403 would confirm the appointment exists."""
-    made = await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic))
+    made = await client.post(
+        "/appointments", headers=auth(clinic.admin), json=booking(clinic)
+    )
     appointment_id = made.json()["id"]
 
     mine = await client.get(f"/appointments/{appointment_id}", headers=auth(clinic.admin))
@@ -169,7 +183,9 @@ async def test_lists_never_cross_clinics(client, clinic):
     other_id, other_people = await make_second_clinic()
     try:
         mine = await client.get("/appointments", headers=auth(clinic.admin))
-        theirs = await client.get("/appointments", headers=auth(other_people[UserRole.ADMIN]))
+        theirs = await client.get(
+            "/appointments", headers=auth(other_people[UserRole.ADMIN])
+        )
         assert len(mine.json()) == 1
         assert theirs.json() == []
     finally:
@@ -180,7 +196,9 @@ async def test_filters_cannot_widen_the_search(client, clinic):
     """Asking for another clinic's doctor by id still returns nothing."""
     other_id, other_people = await make_second_clinic()
     try:
-        await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic))
+        await client.post(
+            "/appointments", headers=auth(clinic.admin), json=booking(clinic)
+        )
         r = await client.get(
             "/appointments",
             headers=auth(other_people[UserRole.ADMIN]),
@@ -207,8 +225,12 @@ async def test_filters_cannot_widen_the_search(client, clinic):
         (120, 30, 201, "hours later"),
     ],
 )
-async def test_overlapping_bookings(client, clinic, offset_minutes, length, expected, label):
-    first = await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic))
+async def test_overlapping_bookings(
+    client, clinic, offset_minutes, length, expected, label
+):
+    first = await client.post(
+        "/appointments", headers=auth(clinic.admin), json=booking(clinic)
+    )
     assert first.status_code == 201, label
 
     second = await client.post(
@@ -221,13 +243,16 @@ async def test_overlapping_bookings(client, clinic, offset_minutes, length, expe
 
 async def test_a_clash_is_a_409_not_a_crash(client, clinic):
     await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic))
-    r = await client.post("/appointments", headers=auth(clinic.admin), json=booking(clinic))
+    r = await client.post(
+        "/appointments", headers=auth(clinic.admin), json=booking(clinic)
+    )
     assert r.status_code == 409
     assert "already booked" in r.json()["detail"]
 
 
 async def test_a_different_doctor_can_take_the_same_hour(client, clinic):
     async with AsyncSessionLocal() as db:
+        await use_tenant(db, clinic.id)
         second_doctor = User(
             tenant_id=clinic.id,
             email=f"doc2@{clinic.slug}.example.com",
@@ -290,11 +315,15 @@ async def test_ten_simultaneous_bookings_of_one_slot(clinic):
     # on test ordering rather than on anything it is checking.
     counter = PeakCounter(app)
     transport = httpx.ASGITransport(app=counter)
-    async with lifespan(app), httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with (
+        lifespan(app),
+        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+    ):
         replies = await asyncio.gather(
-            *(client.post("/appointments", headers=headers, json=payload) for _ in range(10)),
+            *(
+                client.post("/appointments", headers=headers, json=payload)
+                for _ in range(10)
+            ),
             return_exceptions=True,
         )
 

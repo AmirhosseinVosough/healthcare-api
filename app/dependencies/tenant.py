@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import Tenant
-from app.database.session import get_db
+from app.database.session import get_db, use_tenant
 
 
 async def get_tenant(
@@ -36,4 +36,8 @@ async def get_tenant(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Unknown clinic"
         )
+
+    # From here on this transaction can only see this clinic's rows, enforced
+    # by Postgres rather than by remembering to write the right WHERE clause.
+    await use_tenant(db, tenant.id)
     return tenant

@@ -6,13 +6,14 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.revocation import RevokedTokens
 from app.core.tokens import TokenClaims, TokenError, TokenType, decode_token
 from app.database.models import Tenant, User, UserRole
-from app.database.session import get_db
+from app.database.session import get_db, use_tenant
 
 # auto_error=False matters. Left to itself, FastAPI answers a missing
 # Authorization header with 403, which means "I know who you are and you are
@@ -38,9 +39,7 @@ def not_authenticated() -> HTTPException:
 
 
 async def get_bearer_token(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
-    ],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> str:
     """The raw token string, or 401.
 
@@ -120,8 +119,21 @@ async def get_current_user(
     # Checked before the database, in this order on purpose: reading the token
     # costs nothing, the revocation list is one fast lookup, and the database
     # is the expensive part. A logged-out token should not reach it.
-    if await RevokedTokens(request.app.state.redis).is_revoked(claims.jti):
-        raise not_authenticated()
+    try:
+        if await RevokedTokens(request.app.state.redis).is_revoked(claims.jti):
+            raise not_authenticated()
+    except (RedisError, OSError) as exc:
+        # Fail closed again. With the revocation list unreachable we cannot
+        # tell a live token from one someone logged out ten seconds ago, and
+        # honouring a cancelled token is the worse of the two mistakes.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Temporarily unable to verify your session.",
+            headers={"Retry-After": "30"},
+        ) from exc
+
+    # Set before the lookup below, so even that lookup is fenced in.
+    await use_tenant(db, claims.tid)
 
     # Both the user and the clinic are checked in one trip. Matching on
     # tenant_id as well as id means a token naming the wrong clinic finds

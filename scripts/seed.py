@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.core.security import hash_password
 from app.database.models import Tenant, User, UserRole
-from app.database.session import AsyncSessionLocal, engine
+from app.database.session import AsyncSessionLocal, engine, use_tenant
 
 # example.com and its subdomains are reserved by RFC 2606, so none of these
 # can ever reach a real inbox. Note what is NOT used here: .test is reserved by
@@ -64,9 +64,7 @@ async def reset() -> None:
 async def seed() -> None:
     async with AsyncSessionLocal() as db:
         for spec in CLINICS:
-            existing = await db.scalar(
-                select(Tenant).where(Tenant.slug == spec["slug"])
-            )
+            existing = await db.scalar(select(Tenant).where(Tenant.slug == spec["slug"]))
             if existing is not None:
                 print(f"  {spec['slug']}: already there, skipping")
                 continue
@@ -74,6 +72,9 @@ async def seed() -> None:
             clinic = Tenant(name=spec["name"], slug=spec["slug"])
             db.add(clinic)
             await db.flush()
+            # Even seeding has to say which clinic it is writing for. The
+            # policy applies to us as much as to anyone.
+            await use_tenant(db, clinic.id)
 
             for email, full_name, role in spec["people"]:
                 db.add(

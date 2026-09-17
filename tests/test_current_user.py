@@ -1,7 +1,7 @@
 """Phase 4 — turning a token into the person it belongs to."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -10,7 +10,7 @@ from sqlalchemy import update
 from app.core.config import settings
 from app.core.tokens import create_access_token, create_refresh_token
 from app.database.models import Tenant, User, UserRole
-from app.database.session import AsyncSessionLocal
+from app.database.session import AsyncSessionLocal, use_tenant
 
 
 def token_for(user: User) -> str:
@@ -62,6 +62,7 @@ async def test_two_clinics_get_their_own_answer(client, clinic):
         other = Tenant(name="Other", slug=f"other-{uuid.uuid4().hex[:10]}")
         db.add(other)
         await db.flush()
+        await use_tenant(db, other.id)
         stranger = User(
             tenant_id=other.id,
             email=f"x@{other.slug}.example.com",
@@ -121,7 +122,7 @@ async def test_refresh_token_is_not_an_access_token(client, clinic):
 
 
 async def test_expired_token(client, clinic):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stale = jwt.encode(
         {
             "sub": str(clinic.patient.id),
@@ -139,7 +140,7 @@ async def test_expired_token(client, clinic):
 
 
 async def test_token_signed_with_a_different_key(client, clinic):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     forged = jwt.encode(
         {
             "sub": str(clinic.admin.id),
@@ -161,7 +162,7 @@ async def test_token_naming_the_wrong_clinic(client, clinic):
 
     The lookup matches on user AND clinic together, so this finds nobody.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     mismatched = jwt.encode(
         {
             "sub": str(clinic.patient.id),
@@ -184,6 +185,7 @@ async def test_deactivated_user(client, clinic):
     assert (await client.get("/auth/me", headers=auth(token))).status_code == 200
 
     async with AsyncSessionLocal() as db:
+        await use_tenant(db, clinic.id)
         await db.execute(
             update(User).where(User.id == clinic.patient.id).values(is_active=False)
         )
@@ -209,6 +211,7 @@ async def test_deactivated_clinic(client, clinic):
 async def test_deleted_user(client, clinic):
     token = token_for(clinic.patient)
     async with AsyncSessionLocal() as db:
+        await use_tenant(db, clinic.id)
         await db.delete(await db.get(User, clinic.patient.id))
         await db.commit()
 

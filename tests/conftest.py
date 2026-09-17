@@ -6,16 +6,16 @@ import os
 os.environ.setdefault("BCRYPT_ROUNDS", "4")
 
 import uuid  # noqa: E402
-from random import randint  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
+from random import randint  # noqa: E402
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 
+from app.core.redis import lifespan  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
 from app.database.models import Tenant, User, UserRole  # noqa: E402
-from app.core.redis import lifespan  # noqa: E402
-from app.database.session import AsyncSessionLocal, engine  # noqa: E402
+from app.database.session import AsyncSessionLocal, engine, use_tenant  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -74,6 +74,8 @@ async def clinic():
         tenant = Tenant(name=f"Test Clinic {slug}", slug=slug)
         db.add(tenant)
         await db.flush()
+        # Postgres refuses to write a user without being told whose it is.
+        await use_tenant(db, tenant.id)
         people = {}
         for role in (UserRole.ADMIN, UserRole.PATIENT, UserRole.PROVIDER):
             person = User(

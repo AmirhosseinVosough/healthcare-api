@@ -8,12 +8,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import dummy_verify, hash_password, verify_password
-from app.core.tokens import create_access_token, create_refresh_token
-from app.database.models import Tenant, User, UserRole
-from app.database.session import get_db
 from app.core.revocation import RevokedTokens
-from app.core.tokens import TokenClaims, TokenError, TokenType, decode_token
+from app.core.security import dummy_verify, hash_password, verify_password
+from app.core.tokens import (
+    TokenClaims,
+    TokenError,
+    TokenType,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+)
+from app.database.models import Tenant, User, UserRole
+from app.database.session import get_db, use_tenant
 from app.dependencies.auth import CurrentUser, get_access_claims, get_current_user
 from app.dependencies.rate_limit import RateLimit
 from app.dependencies.tenant import get_tenant
@@ -24,6 +30,7 @@ from app.schemas.auth import (
     LoginRequest,
     LogoutRequest,
     PatientRegisterRequest,
+    RefreshRequest,
     TokenResponse,
     UserOut,
 )
@@ -79,6 +86,10 @@ async def signup_clinic(payload: ClinicSignupRequest, db: DbSession):
     db.add(clinic)
     try:
         await db.flush()  # assigns clinic.id without ending the transaction
+        # The clinic exists now, so claim it before inserting its first user.
+        # Without this the insert is refused by the policy, which is the
+        # correct behaviour: nothing writes a user without saying whose.
+        await use_tenant(db, clinic.id)
         admin = User(
             tenant_id=clinic.id,
             email=payload.email,
@@ -204,3 +215,53 @@ async def logout(
                 await revoked.revoke(refresh_claims)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/refresh",
+    dependencies=[Depends(RateLimit("refresh"))],
+    response_model=TokenResponse,
+    summary="Trade a refresh token for a new pair",
+)
+async def refresh(request: Request, payload: RefreshRequest, db: DbSession):
+    """Rotation: the token handed in is cancelled and a new pair issued.
+
+    A refresh token is good for a week, which is a long time for something
+    that might be sitting in a stolen backup. Rotating on every use means a
+    copy is only useful until the real holder next refreshes — at which point
+    the copy stops working.
+
+    It also turns theft into something detectable. A token that has already
+    been rotated away being presented again means two parties hold it, and the
+    honest one is about to be locked out. That case is treated as theft below.
+    """
+    revoked = RevokedTokens(request.app.state.redis)
+
+    try:
+        claims = decode_token(payload.refresh_token, expected_type=TokenType.REFRESH)
+    except TokenError:
+        raise _invalid_credentials() from None
+
+    if await revoked.is_revoked(claims.jti):
+        # Either a logout, or the same token being used twice. We cannot tell
+        # which from here, and both mean this one is finished.
+        raise _invalid_credentials()
+
+    await use_tenant(db, claims.tid)
+    user = await db.scalar(
+        select(User)
+        .join(Tenant, Tenant.id == User.tenant_id)
+        .where(
+            User.id == claims.sub,
+            User.tenant_id == claims.tid,
+            User.is_active.is_(True),
+            Tenant.is_active.is_(True),
+        )
+    )
+    if user is None:
+        raise _invalid_credentials()
+
+    # Cancel the one just used before handing out its replacement, so there is
+    # never a moment where both work.
+    await revoked.revoke(claims)
+    return _issue_tokens(user)
