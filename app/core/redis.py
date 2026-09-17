@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 
 from app.core.config import settings
+from app.core.logging import configure_logging
 
 
 def create_redis() -> Redis:
@@ -26,6 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Opened here rather than per request: dialling Redis fresh on every login
     would cost more than the check it exists to perform.
     """
+    # First thing, so anything logged during startup is actually emitted.
+    configure_logging()
     app.state.redis = create_redis()
     try:
         yield

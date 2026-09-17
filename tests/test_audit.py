@@ -112,3 +112,68 @@ async def test_an_incoming_request_id_is_kept(client, clinic, audit_lines):
     assert r.headers["X-Request-ID"] == given
     entry = [line for line in audit_lines() if line["action"] == "appointment.create"][0]
     assert entry["request_id"] == given
+
+
+# --- the tests above all use caplog, which is why they missed this ----------
+#
+# caplog attaches its own handler and lowers the level, so it captures records
+# at the logger — before anything decides whether to emit them. Every test
+# above passed while the audit trail produced no output at all in a real
+# server. These check what actually comes out.
+
+
+def test_the_audit_logger_has_somewhere_to_write(capsys):
+    """Without a handler, INFO records are dropped in silence."""
+    import logging
+
+    from app.core.logging import configure_logging
+
+    configure_logging()
+    logger = logging.getLogger("audit")
+    assert logger.handlers, "no handler: audit lines go nowhere"
+    assert logger.level <= logging.INFO
+    assert not logger.propagate, "would emit twice once a root handler exists"
+
+
+def test_an_audit_line_reaches_standard_output(capsys):
+    """End to end: call record(), read stdout."""
+    import uuid
+
+    from app.core import audit
+    from app.core.logging import configure_logging
+
+    configure_logging()
+    tenant, user = uuid.uuid4(), uuid.uuid4()
+    audit.record(
+        action="appointment.read",
+        tenant_id=tenant,
+        user_id=user,
+        request_id="req-abc",
+        resource_id=uuid.uuid4(),
+    )
+
+    written = capsys.readouterr().out
+    assert written.strip(), "nothing was written to stdout"
+    entry = json.loads(written.strip().splitlines()[-1])
+    assert entry["action"] == "appointment.read"
+    assert entry["tenant_id"] == str(tenant)
+    assert entry["request_id"] == "req-abc"
+
+
+def test_the_line_is_json_and_nothing_else(capsys):
+    """No timestamp or level prefix, or downstream has to strip it first."""
+    import uuid
+
+    from app.core import audit
+    from app.core.logging import configure_logging
+
+    configure_logging()
+    audit.record(
+        action="appointment.list",
+        tenant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        request_id="req-xyz",
+    )
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    assert line.startswith("{") and line.endswith("}")
+    json.loads(line)  # raises if the line is not pure JSON

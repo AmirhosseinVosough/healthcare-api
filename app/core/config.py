@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
     # Rate limiting. Five attempts a minute is generous for a person typing a
     # password and useless to a script working through a dictionary.
+    log_level: str = "INFO"
     rate_limit_enabled: bool = True
     auth_rate_limit: int = 5
     auth_rate_window_seconds: int = 60
