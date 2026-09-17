@@ -4,11 +4,12 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import audit
 from app.database.models import Appointment, AppointmentStatus, User, UserRole
 from app.database.session import get_db
 from app.dependencies.auth import CurrentUser, get_current_user
@@ -49,7 +50,7 @@ async def _person_in_this_clinic(
     summary="Book an appointment",
 )
 async def create_appointment(
-    payload: AppointmentCreate, caller: Caller, db: DbSession
+    request: Request, payload: AppointmentCreate, caller: Caller, db: DbSession
 ):
     patient = await _person_in_this_clinic(
         db, payload.patient_id, caller.tenant_id, UserRole.PATIENT
@@ -93,6 +94,15 @@ async def create_appointment(
             ) from None
         raise
 
+    audit.record(
+        action="appointment.create",
+        tenant_id=caller.tenant_id,
+        user_id=caller.id,
+        request_id=request.state.request_id,
+        resource_id=appointment.id,
+        provider_id=appointment.provider_id,
+        patient_id=appointment.patient_id,
+    )
     return AppointmentOut.model_validate(appointment)
 
 
@@ -102,6 +112,7 @@ async def create_appointment(
     summary="List appointments in your clinic",
 )
 async def list_appointments(
+    request: Request,
     caller: Caller,
     db: DbSession,
     provider_id: Annotated[uuid.UUID | None, Query()] = None,
@@ -132,6 +143,13 @@ async def list_appointments(
 
     query = query.order_by(Appointment.scheduled_start).limit(limit).offset(offset)
     rows = (await db.scalars(query)).all()
+    audit.record(
+        action="appointment.list",
+        tenant_id=caller.tenant_id,
+        user_id=caller.id,
+        request_id=request.state.request_id,
+        returned=len(rows),
+    )
     return [AppointmentOut.model_validate(r) for r in rows]
 
 
@@ -141,7 +159,9 @@ async def list_appointments(
     summary="Fetch one appointment",
     responses={404: {"description": "No such appointment, in your clinic"}},
 )
-async def get_appointment(appointment_id: uuid.UUID, caller: Caller, db: DbSession):
+async def get_appointment(
+    request: Request, appointment_id: uuid.UUID, caller: Caller, db: DbSession
+):
     """404, never 403, for an appointment belonging to another clinic.
 
     403 means "this exists and you may not have it", which confirms it exists.
@@ -159,7 +179,24 @@ async def get_appointment(appointment_id: uuid.UUID, caller: Caller, db: DbSessi
         )
     )
     if appointment is None:
+        # Logged too. A run of these from one account is somebody guessing ids.
+        audit.record(
+            action="appointment.read",
+            tenant_id=caller.tenant_id,
+            user_id=caller.id,
+            request_id=request.state.request_id,
+            resource_id=appointment_id,
+            outcome="not_found",
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No such appointment"
         )
+
+    audit.record(
+        action="appointment.read",
+        tenant_id=caller.tenant_id,
+        user_id=caller.id,
+        request_id=request.state.request_id,
+        resource_id=appointment.id,
+    )
     return AppointmentOut.model_validate(appointment)
