@@ -5,17 +5,16 @@ Revises: 20ba22d4f737
 Create Date: 2026-09-16 18:14:56.415356
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 from alembic import op
-import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
-revision: str = '15c387ddc46c'
-down_revision: Union[str, Sequence[str], None] = '20ba22d4f737'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision: str = "15c387ddc46c"
+down_revision: str | Sequence[str] | None = "20ba22d4f737"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -43,8 +42,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE appointments DROP CONSTRAINT no_provider_double_booking"
-    )
+    op.execute("ALTER TABLE appointments DROP CONSTRAINT no_provider_double_booking")
     # btree_gist is left installed on purpose. Dropping an extension other
     # things may be leaning on is not this migration's business.

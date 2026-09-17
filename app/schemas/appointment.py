@@ -5,7 +5,7 @@ token and nowhere else, so there is no field to tamper with even in principle.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -33,14 +33,13 @@ class AppointmentCreate(BaseModel):
     def _check_the_times_make_sense(self) -> "AppointmentCreate":
         if self.scheduled_start.tzinfo is None or self.scheduled_end.tzinfo is None:
             raise ValueError(
-                "times must say which timezone they are in, e.g. "
-                "2026-10-01T10:00:00Z"
+                "times must say which timezone they are in, e.g. 2026-10-01T10:00:00Z"
             )
         if self.scheduled_end <= self.scheduled_start:
             raise ValueError("the appointment must end after it starts")
         if self.scheduled_end - self.scheduled_start > MAX_APPOINTMENT_LENGTH:
             raise ValueError("an appointment cannot run longer than 8 hours")
-        if self.scheduled_start < datetime.now(timezone.utc):
+        if self.scheduled_start < datetime.now(UTC):
             raise ValueError("cannot book an appointment in the past")
         return self
 

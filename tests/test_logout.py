@@ -47,10 +47,14 @@ async def test_logout_kills_every_protected_route_not_just_me(client, clinic):
 
 async def test_logging_out_twice_is_harmless(client, clinic):
     tokens = await login(client, clinic)
-    assert (await client.post("/auth/logout", headers=auth(tokens), json={})).status_code == 204
+    assert (
+        await client.post("/auth/logout", headers=auth(tokens), json={})
+    ).status_code == 204
     # The second attempt now carries a revoked token, so it is refused as any
     # other revoked token would be — not treated as an error worth reporting.
-    assert (await client.post("/auth/logout", headers=auth(tokens), json={})).status_code == 401
+    assert (
+        await client.post("/auth/logout", headers=auth(tokens), json={})
+    ).status_code == 401
 
 
 async def test_logout_needs_a_working_token(client, clinic):
@@ -93,7 +97,9 @@ async def test_handing_in_the_refresh_token_cancels_it_too(client, clinic):
     pass would hand one out moments after logging out.
     """
     tokens = await login(client, clinic)
-    refresh_claims = decode_token(tokens["refresh_token"], expected_type=TokenType.REFRESH)
+    refresh_claims = decode_token(
+        tokens["refresh_token"], expected_type=TokenType.REFRESH
+    )
 
     out = await client.post(
         "/auth/logout",

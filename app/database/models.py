@@ -129,7 +129,9 @@ class Appointment(Base):
             using="gist",
             where=text("status <> 'cancelled'"),
         ),
-        Index("ix_appointments_tenant_id_scheduled_start", "tenant_id", "scheduled_start"),
+        Index(
+            "ix_appointments_tenant_id_scheduled_start", "tenant_id", "scheduled_start"
+        ),
         Index(
             "ix_appointments_tenant_id_provider_id_scheduled_start",
             "tenant_id",

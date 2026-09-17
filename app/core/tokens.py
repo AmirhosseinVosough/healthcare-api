@@ -8,7 +8,7 @@ edit. A signed claim can be forged only by forging the signature.
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 import jwt
@@ -52,7 +52,7 @@ def _create_token(
     token_type: TokenType,
     lifetime: timedelta,
 ) -> IssuedToken:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at = now + lifetime
     jti = uuid.uuid4()
     payload = {

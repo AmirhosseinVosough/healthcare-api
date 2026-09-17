@@ -1,7 +1,6 @@
 """Phase 6 — rate limiting on the two doors that take a password."""
 
 import asyncio
-import time
 import uuid
 
 import pytest
@@ -144,9 +143,13 @@ async def test_the_limit_counts_attempts_not_failures(client, clinic):
     right = {"email": clinic.admin.email, "password": clinic.password}
 
     for _ in range(5):
-        assert (await client.post("/auth/login", headers=headers, json=right)).status_code == 200
+        assert (
+            await client.post("/auth/login", headers=headers, json=right)
+        ).status_code == 200
 
-    assert (await client.post("/auth/login", headers=headers, json=right)).status_code == 429
+    assert (
+        await client.post("/auth/login", headers=headers, json=right)
+    ).status_code == 429
 
 
 async def test_signup_has_its_own_allowance(client, clinic):

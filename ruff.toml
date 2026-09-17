@@ -1,0 +1,17 @@
+line-length = 90
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = [
+    # Would turn `class UserRole(str, Enum)` into StrEnum. StrEnum changes
+    # what str() gives back, which our tokens and audit lines depend on, so
+    # this is a behaviour change dressed as a style fix.
+    "UP042",
+]
+
+[lint.per-file-ignores]
+# conftest sets an environment variable that must land before the app is
+# imported, so its imports genuinely cannot all sit at the top.
+"tests/conftest.py" = ["E402"]
+"alembic/versions/*" = ["E501"]

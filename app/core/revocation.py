@@ -11,7 +11,7 @@ it cannot grow without bound.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from redis.asyncio import Redis
 
@@ -34,7 +34,7 @@ class RevokedTokens:
         A token that has already expired is not worth storing — it is refused
         on its own expiry, and an entry for it would just be litter.
         """
-        remaining = int((claims.exp - datetime.now(timezone.utc)).total_seconds())
+        remaining = int((claims.exp - datetime.now(UTC)).total_seconds())
         if remaining <= 0:
             return 0
         await self._redis.set(_key(claims.jti), "1", ex=remaining)

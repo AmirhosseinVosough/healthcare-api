@@ -2,7 +2,7 @@
 
 import uuid
 import warnings
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -37,7 +37,7 @@ def refresh():
 
 def forge(*, key=None, algorithm="HS256", **overrides) -> str:
     """Build a token an attacker might present. Signed with our key by default."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(USER_ID),
         "tid": str(CLINIC_ID),
@@ -98,9 +98,7 @@ def test_signing_key_is_long_enough_for_the_algorithm():
     """PyJWT warns below 32 bytes for HS256; a guessable key forges any clinic."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        create_access_token(
-            user_id=USER_ID, tenant_id=CLINIC_ID, role=UserRole.ADMIN
-        )
+        create_access_token(user_id=USER_ID, tenant_id=CLINIC_ID, role=UserRole.ADMIN)
 
 
 # --- everything that must be refused ----------------------------------------
@@ -130,7 +128,7 @@ def test_token_signed_with_another_key_refused():
 
 
 def test_expired_token_refused():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stale = forge(iat=now - timedelta(hours=2), exp=now - timedelta(hours=1))
     with pytest.raises(TokenError):
         decode_token(stale, expected_type=TokenType.ACCESS)
