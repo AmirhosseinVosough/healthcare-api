@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.revocation import RevokedTokens
-from app.core.tokens import TokenError, TokenType, decode_token
+from app.core.tokens import TokenClaims, TokenError, TokenType, decode_token
 from app.database.models import Tenant, User, UserRole
 from app.database.session import get_db
 
@@ -140,3 +140,18 @@ async def get_current_user(
         raise not_authenticated()
 
     return CurrentUser.from_user(user)
+
+
+async def get_access_claims(
+    token: Annotated[str, Depends(get_bearer_token)],
+) -> TokenClaims:
+    """What the token itself says, for routes that act on the token.
+
+    get_current_user answers "who is this"; this answers "which token is
+    this". Logging out needs the second one, because it revokes one specific
+    token rather than the person.
+    """
+    try:
+        return decode_token(token, expected_type=TokenType.ACCESS)
+    except TokenError:
+        raise not_authenticated() from None

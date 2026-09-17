@@ -105,3 +105,15 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int  # seconds until access_token dies, for the client's timer
+
+
+class LogoutRequest(BaseModel):
+    """The refresh token is optional but strongly wanted.
+
+    Without it, logging out only cancels the fifteen-minute token while the
+    week-long one stays live, and the next request for a fresh token hands
+    out a new pass moments later — which makes logging out look like it
+    worked while changing nothing.
+    """
+
+    refresh_token: str | None = None

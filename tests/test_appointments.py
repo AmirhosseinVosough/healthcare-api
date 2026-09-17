@@ -11,6 +11,7 @@ from app.core.security import hash_password
 from app.core.tokens import create_access_token
 from app.database.models import Tenant, User, UserRole
 from app.database.session import AsyncSessionLocal
+from app.core.redis import lifespan
 from app.main import app
 
 SOON = datetime.now(timezone.utc) + timedelta(days=30)
@@ -283,9 +284,15 @@ async def test_ten_simultaneous_bookings_of_one_slot(clinic):
     payload = booking(clinic)
     headers = auth(clinic.admin)
 
+    # This test builds its own way into the app so it can count requests in
+    # flight, which means it must run the startup routine itself. Borrowing
+    # one another test happened to leave running would make this pass or fail
+    # on test ordering rather than on anything it is checking.
     counter = PeakCounter(app)
     transport = httpx.ASGITransport(app=counter)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with lifespan(app), httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
         replies = await asyncio.gather(
             *(client.post("/appointments", headers=headers, json=payload) for _ in range(10)),
             return_exceptions=True,

@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +12,9 @@ from app.core.security import dummy_verify, hash_password, verify_password
 from app.core.tokens import create_access_token, create_refresh_token
 from app.database.models import Tenant, User, UserRole
 from app.database.session import get_db
-from app.dependencies.auth import CurrentUser, get_current_user
+from app.core.revocation import RevokedTokens
+from app.core.tokens import TokenClaims, TokenError, TokenType, decode_token
+from app.dependencies.auth import CurrentUser, get_access_claims, get_current_user
 from app.dependencies.rate_limit import RateLimit
 from app.dependencies.tenant import get_tenant
 from app.schemas.auth import (
@@ -20,6 +22,7 @@ from app.schemas.auth import (
     ClinicSignupRequest,
     ClinicSignupResponse,
     LoginRequest,
+    LogoutRequest,
     PatientRegisterRequest,
     TokenResponse,
     UserOut,
@@ -163,3 +166,41 @@ async def read_me(user: Annotated[CurrentUser, Depends(get_current_user)]):
     """The first route behind a token. Everything in Phase 5 sits behind the
     same dependency, which is why this one is worth proving on its own."""
     return UserOut.model_validate(user)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Cancel the tokens you are holding",
+)
+async def logout(
+    request: Request,
+    caller: Annotated[CurrentUser, Depends(get_current_user)],
+    claims: Annotated[TokenClaims, Depends(get_access_claims)],
+    payload: LogoutRequest | None = None,
+) -> Response:
+    """Stop honouring this token, and the refresh token if one is handed in.
+
+    Requires a working token, so nobody can fill the revocation list with
+    invented ids. Calling it twice is harmless — the second call revokes an
+    already-revoked token, which changes nothing.
+    """
+    revoked = RevokedTokens(request.app.state.redis)
+    await revoked.revoke(claims)
+
+    if payload is not None and payload.refresh_token:
+        try:
+            refresh_claims = decode_token(
+                payload.refresh_token, expected_type=TokenType.REFRESH
+            )
+        except TokenError:
+            # Already expired or not a real refresh token. Nothing to cancel,
+            # and no reason to fail a logout over it.
+            pass
+        else:
+            # Only your own. Otherwise handing in somebody else's refresh
+            # token would log them out.
+            if refresh_claims.sub == caller.id:
+                await revoked.revoke(refresh_claims)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
