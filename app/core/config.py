@@ -29,11 +29,32 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     auth_rate_limit: int = 5
     auth_rate_window_seconds: int = 60
-    # Only switch this on when something trustworthy sits in front of the app.
-    # Otherwise X-Forwarded-For is written by whoever is calling, and they can
-    # put a fresh invented address in it on every request to reset their own
-    # allowance — which would make the limiter decorative.
-    trust_proxy_headers: bool = False
+    # A per-account limit that sits alongside the per-address one. It stops a
+    # crowd of machines all attacking one account, which the address limit
+    # cannot: the attacker chooses how many addresses they have. Only FAILED
+    # logins count, so a person logging in normally is never affected by it.
+    account_rate_limit: int = 10
+    account_rate_window_seconds: int = 900  # 15 minutes
+
+    # The addresses of proxies we trust to tell us who the real caller is.
+    # Comma-separated, e.g. "127.0.0.1,10.0.0.1". EMPTY BY DEFAULT, which means
+    # trust nobody: the caller is whoever actually opened the connection.
+    #
+    # X-Forwarded-For is a header, and a header is written by whoever sends the
+    # request. Believed blindly, an attacker puts a new invented address in it
+    # on every guess and gets a fresh allowance each time — the limiter becomes
+    # decorative. We read it ONLY when the connection genuinely came from a
+    # proxy in this list, because only then was the header written by our own
+    # infrastructure rather than by the caller.
+    #
+    # Must be run with `uvicorn --no-proxy-headers`, so the framework does not
+    # quietly do its own, looser version of this before our code is reached.
+    trusted_proxy_ips: str = ""
+
+    @property
+    def trusted_proxies(self) -> set[str]:
+        return {ip.strip() for ip in self.trusted_proxy_ips.split(",") if ip.strip()}
+
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
 

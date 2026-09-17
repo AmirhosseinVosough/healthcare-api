@@ -3,11 +3,13 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.rate_limit import RateLimiter
 from app.core.revocation import RevokedTokens
 from app.core.security import (
     dummy_verify_async,
@@ -152,24 +154,81 @@ async def register_patient(
     response_model=TokenResponse,
     summary="Exchange a password for tokens",
 )
-async def login(payload: LoginRequest, clinic: CurrentClinic, db: DbSession):
+async def login(
+    request: Request, payload: LoginRequest, clinic: CurrentClinic, db: DbSession
+):
+    """Two guards, and a rule between them: a correct password always wins.
+
+    Guard 1 (per caller) already ran as a dependency above. Guard 2 (per
+    account) is here, because it needs the email. It counts only FAILED
+    logins, and it is checked in an order that matters: the password is
+    verified BEFORE the budget can refuse anyone, so an attacker filling the
+    budget with wrong guesses can never lock the real owner out — the moment
+    they type the right password, they are in.
+    """
+    limiter = RateLimiter(request.app.state.redis)
+    # Keyed on the submitted email whether or not it exists, so an attacker
+    # cannot tell a real account from an invented one by how it is refused.
+    account_key = f"ratelimit:account:{clinic.id}:{payload.email}"
+
+    async def account_over_budget() -> bool:
+        if not settings.rate_limit_enabled:
+            return False
+        try:
+            decision = await limiter.peek(
+                account_key,
+                limit=settings.account_rate_limit,
+                window_seconds=settings.account_rate_window_seconds,
+            )
+        except (RedisError, OSError) as exc:
+            # Fail closed, same as everywhere else.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Login is briefly unavailable. Please try again shortly.",
+                headers={"Retry-After": "30"},
+            ) from exc
+        return not decision.allowed
+
+    async def note_failure() -> None:
+        if settings.rate_limit_enabled:
+            try:
+                await limiter.record_failure(
+                    account_key,
+                    window_seconds=settings.account_rate_window_seconds,
+                )
+            except (RedisError, OSError):
+                # A failure we could not record is not worth turning a 401 into
+                # a 503 over. The per-address guard still applies.
+                pass
+
     user = await db.scalar(
         select(User).where(User.tenant_id == clinic.id, User.email == payload.email)
     )
 
-    if user is None:
-        # Do the same work a real check costs, so an unknown email takes just
-        # as long to answer as a real one.
+    # The password is checked FIRST, so a correct one is honoured even when the
+    # account budget is already full.
+    if user is not None and user.is_active:
+        if await verify_password_async(payload.password, user.hashed_password):
+            # Success wipes the failure count: the real owner just proved
+            # themselves, so the attacker's noise should not linger.
+            if settings.rate_limit_enabled:
+                await limiter.clear(account_key)
+            return _issue_tokens(user)
+    else:
+        # Unknown or inactive account: spend the same time a real check costs,
+        # so timing gives nothing away.
         await dummy_verify_async()
-        raise _invalid_credentials()
 
-    if not await verify_password_async(payload.password, user.hashed_password):
-        raise _invalid_credentials()
-
-    if not user.is_active:
-        raise _invalid_credentials()
-
-    return _issue_tokens(user)
+    # We are on the failure path. Record it, and only now consult Guard 2 — if
+    # this account has failed too many times, say so; otherwise the plain 401.
+    await note_failure()
+    if await account_over_budget():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Try again shortly.",
+            headers={"Retry-After": str(settings.account_rate_window_seconds)},
+        )
+    raise _invalid_credentials()
 
 
 @router.get(

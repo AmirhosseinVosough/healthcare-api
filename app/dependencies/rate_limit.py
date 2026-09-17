@@ -1,4 +1,9 @@
-"""Puts the rate limiter in front of a route."""
+"""The two guards on the login door.
+
+Guard 1 (this file's caller_address + RateLimit) counts guesses per caller.
+Guard 2 (the per-account limit) lives in the login route, because it needs the
+email, and is built on the same RateLimiter underneath.
+"""
 
 from fastapi import HTTPException, Request, status
 from redis.exceptions import RedisError
@@ -8,22 +13,31 @@ from app.core.rate_limit import RateLimiter
 
 
 def caller_address(request: Request) -> str:
-    """Who the attempts get counted against."""
-    if settings.trust_proxy_headers:
+    """Work out who actually sent the request.
+
+    request.client.host is the address that genuinely opened the connection,
+    which the caller cannot fake. X-Forwarded-For is a header the caller writes
+    themselves, so it is only believed when the connection came from one of our
+    own trusted proxies — because only then did that proxy write the header.
+
+    When trusted, the RIGHTMOST entry is the one our proxy added; the entries
+    to the left of it can be anything the caller pre-loaded, so they are
+    ignored. With no trusted proxies configured (the default), the header is
+    never read at all.
+    """
+    peer = request.client.host if request.client else "unknown"
+
+    if peer in settings.trusted_proxies:
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
-            # The first entry is the original caller; the rest are the proxies
-            # it passed through on the way here.
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+            hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+            if hops:
+                return hops[-1]
+    return peer
 
 
 class RateLimit:
-    """Use as a dependency: Depends(RateLimit("login")).
-
-    Each scope counts separately, so burning the login allowance does not also
-    lock someone out of signing up a clinic.
-    """
+    """Guard 1, as a dependency: Depends(RateLimit("login"))."""
 
     def __init__(
         self,
@@ -50,15 +64,7 @@ class RateLimit:
                 key, limit=self.limit, window_seconds=self.window_seconds
             )
         except (RedisError, OSError) as exc:
-            # Fail closed, deliberately.
-            #
-            # With Redis gone we cannot count attempts. Letting everyone
-            # through would mean an outage in the counting service quietly
-            # removes brute-force protection from the login page — and the one
-            # thing worth attacking during an outage is the login page.
-            #
-            # Refusing logins for a few minutes is a visible, understood
-            # failure. Silently unlimited password guessing is neither.
+            # Fail closed: if we cannot count, we do not take the attempt.
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Login is briefly unavailable. Please try again shortly.",
@@ -69,7 +75,5 @@ class RateLimit:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many attempts. Try again shortly.",
-                # Tells a well-behaved client exactly how long to wait instead
-                # of leaving it to guess and keep hammering.
                 headers={"Retry-After": str(decision.retry_after_seconds)},
             )

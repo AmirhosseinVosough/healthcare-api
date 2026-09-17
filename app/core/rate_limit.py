@@ -51,6 +51,36 @@ redis.call('PEXPIRE', KEYS[1], window)
 return {0, 0, wait}
 """
 
+# Guard 2 needs the count and the recording kept apart, because it only counts
+# FAILURES. PEEK asks "is this account over its budget right now?" and records
+# nothing, so a correct password can be checked without ever adding to the
+# count. RECORD adds one failure, and is called only after a guess turns out
+# to be wrong.
+PEEK_WINDOW = """
+local now    = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit  = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, now - window)
+local used = redis.call('ZCARD', KEYS[1])
+if used < limit then
+    return {1, limit - used, 0}
+end
+local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+local wait = window
+if oldest[2] then
+    wait = (tonumber(oldest[2]) + window) - now
+end
+return {0, 0, wait}
+"""
+
+RECORD_FAILURE = """
+local now    = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+redis.call('ZADD', KEYS[1], now, ARGV[3])
+redis.call('PEXPIRE', KEYS[1], window)
+return redis.call('ZCARD', KEYS[1])
+"""
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -65,6 +95,8 @@ class RateLimiter:
         # register_script sends the body once, then calls it by its hash, so
         # the script is not shipped over the wire on every request.
         self._script = redis.register_script(SLIDING_WINDOW)
+        self._peek = redis.register_script(PEEK_WINDOW)
+        self._record = redis.register_script(RECORD_FAILURE)
 
     async def check(self, key: str, *, limit: int, window_seconds: int) -> Decision:
         now_ms = int(time.time() * 1000)
@@ -79,3 +111,34 @@ class RateLimiter:
             # Round up, so 200ms left is reported as 1 second rather than 0.
             retry_after_seconds=0 if allowed else max(1, -(-int(wait_ms) // 1000)),
         )
+
+    async def peek(self, key: str, *, limit: int, window_seconds: int) -> Decision:
+        """Is this key over its budget right now? Records nothing.
+
+        Used by the per-account guard before the password is checked, so a
+        correct password is never blocked by a full budget.
+        """
+        now_ms = int(time.time() * 1000)
+        allowed, remaining, wait_ms = await self._peek(
+            keys=[key], args=[now_ms, window_seconds * 1000, limit]
+        )
+        allowed = bool(allowed)
+        return Decision(
+            allowed=allowed,
+            remaining=int(remaining),
+            retry_after_seconds=0 if allowed else max(1, -(-int(wait_ms) // 1000)),
+        )
+
+    async def record_failure(self, key: str, *, window_seconds: int) -> int:
+        """Add one failure to a key's window. Returns the new count."""
+        now_ms = int(time.time() * 1000)
+        return int(
+            await self._record(
+                keys=[key], args=[now_ms, window_seconds * 1000, uuid.uuid4().hex]
+            )
+        )
+
+    async def clear(self, key: str) -> None:
+        """Wipe a key. Called on a successful login, so a real user starts
+        fresh the moment they get it right."""
+        await self._redis.delete(key)
