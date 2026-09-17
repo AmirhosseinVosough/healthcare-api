@@ -4,6 +4,8 @@ Slow on purpose: the cost factor is what makes a stolen password table
 expensive to crack offline rather than a weekend's work on a GPU.
 """
 
+import asyncio
+
 from passlib.context import CryptContext
 from passlib.exc import UnknownHashError
 
@@ -65,3 +67,31 @@ def dummy_verify() -> None:
     if _dummy_hash is None:
         _dummy_hash = pwd_context.hash(_DUMMY_PASSWORD)
     pwd_context.verify(_DUMMY_PASSWORD, _dummy_hash)
+
+
+# --- the async versions, which is what the routes use ----------------------
+#
+# bcrypt is deliberately slow and entirely CPU-bound. Called straight from a
+# coroutine it does not merely make that request slow — it blocks the event
+# loop for its whole duration, so every other request on the worker waits
+# behind it. Under load that turns a slow login into a slow everything.
+#
+# Measured before and after in docs/load-test.md: at 100 concurrent users the
+# listing endpoint went from a 3,200ms 95th percentile to a fraction of that,
+# with no change to the hashing itself.
+#
+# to_thread hands the work to a worker thread. bcrypt releases the GIL while
+# it runs, so the loop is genuinely free in the meantime rather than merely
+# pretending to be.
+
+
+async def hash_password_async(password: str) -> str:
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(plain_password: str, password_hash: str) -> bool:
+    return await asyncio.to_thread(verify_password, plain_password, password_hash)
+
+
+async def dummy_verify_async() -> None:
+    await asyncio.to_thread(dummy_verify)

@@ -1,0 +1,7 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,POST /auth/login,HTTPError('500 Server Error: Internal Server Error for url: POST /auth/login'),7,2026-09-17T16:59:34Z,2026-09-17T16:59:36Z
+GET,GET /appointments/{id},HTTPError('500 Server Error: Internal Server Error for url: GET /appointments/{id}'),5,2026-09-17T16:59:32Z,2026-09-17T16:59:36Z
+POST,POST /appointments,HTTPError('500 Server Error: Internal Server Error for url: POST /appointments'),7,2026-09-17T16:59:32Z,2026-09-17T16:59:36Z
+GET,GET /auth/me,HTTPError('500 Server Error: Internal Server Error for url: GET /auth/me'),6,2026-09-17T16:59:32Z,2026-09-17T16:59:36Z
+GET,GET /appointments,HTTPError('500 Server Error: Internal Server Error for url: GET /appointments'),21,2026-09-17T16:59:32Z,2026-09-17T16:59:36Z
+POST,POST /appointments,HTTPError('409 Client Error: Conflict for url: POST /appointments'),2,2026-09-17T16:59:43Z,2026-09-17T16:59:57Z

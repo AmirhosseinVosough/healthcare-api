@@ -132,6 +132,14 @@ pytest tests/test_rls.py            # the isolation floor
 pytest tests/test_pooling_leak.py   # the bug worth reading about
 ```
 
+Load testing, which needs its own data and a server you started yourself:
+
+```bash
+python -m scripts.seed_load --reset   # 50 clinics, 550 users, 2000 appointments
+scripts/run_load.sh baseline          # steps through 10 → 400 concurrent users
+python scripts/load_report.py baseline
+```
+
 Every file passes on its own. Tests that borrow setup from whichever test ran
 before them pass for reasons unrelated to what they check.
 
@@ -154,6 +162,16 @@ checking whether a slot is free and then booking it is two steps and two
 requests can pass both. The test also asserts all ten were genuinely in flight
 at once — without that, ten requests quietly running in sequence would pass
 every other line and prove nothing.
+
+**[The load test that found a real limit](docs/load-test.md).** Throughput
+climbed to 117 req/s and then *fell to 8* as concurrency doubled — a collapse,
+not a plateau. The cause was not that bcrypt is slow; it is slow on purpose.
+The cause was that it was slow **on the event loop**, so every request queued
+behind somebody else's password. Moving the hashing to a worker thread took
+200-user throughput from 8 req/s to 528, with nothing about the hashing
+itself changed. Same page notes a second hazard found by arithmetic rather
+than failure: pool size times worker count exceeds the database's connection
+limit before the load does.
 
 **Rate limiting that cannot be raced or straddled.** Counting in application
 code means read, add one, write back — twenty simultaneous requests all read

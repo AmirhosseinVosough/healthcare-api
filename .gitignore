@@ -8,3 +8,6 @@ venv/
 .ruff_cache/
 dist/
 build/
+
+# Load test run output: the CSVs are kept as evidence, the logs are noise
+loadtest/**/*.log

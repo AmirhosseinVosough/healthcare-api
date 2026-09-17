@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+GET,GET /appointments,HTTPError('503 Server Error: Service Unavailable for url: GET /appointments'),1,2026-09-17T16:52:47Z,2026-09-17T16:52:47Z

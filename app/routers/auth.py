@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.revocation import RevokedTokens
-from app.core.security import dummy_verify, hash_password, verify_password
+from app.core.security import (
+    dummy_verify_async,
+    hash_password_async,
+    verify_password_async,
+)
 from app.core.tokens import (
     TokenClaims,
     TokenError,
@@ -93,7 +97,7 @@ async def signup_clinic(payload: ClinicSignupRequest, db: DbSession):
         admin = User(
             tenant_id=clinic.id,
             email=payload.email,
-            hashed_password=hash_password(payload.password),
+            hashed_password=await hash_password_async(payload.password),
             full_name=payload.full_name,
             role=UserRole.ADMIN,
         )
@@ -123,7 +127,7 @@ async def register_patient(
     patient = User(
         tenant_id=clinic.id,
         email=payload.email,
-        hashed_password=hash_password(payload.password),
+        hashed_password=await hash_password_async(payload.password),
         full_name=payload.full_name,
         # Fixed here, never read from the request. This is the line that stops
         # anyone signing themselves up as an admin.
@@ -156,10 +160,10 @@ async def login(payload: LoginRequest, clinic: CurrentClinic, db: DbSession):
     if user is None:
         # Do the same work a real check costs, so an unknown email takes just
         # as long to answer as a real one.
-        dummy_verify()
+        await dummy_verify_async()
         raise _invalid_credentials()
 
-    if not verify_password(payload.password, user.hashed_password):
+    if not await verify_password_async(payload.password, user.hashed_password):
         raise _invalid_credentials()
 
     if not user.is_active:

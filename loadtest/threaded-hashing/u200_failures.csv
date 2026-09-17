@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,POST /appointments,HTTPError('409 Client Error: Conflict for url: POST /appointments'),2,2026-09-17T16:57:04Z,2026-09-17T16:57:11Z
